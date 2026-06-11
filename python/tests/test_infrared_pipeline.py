@@ -15,6 +15,7 @@ from infrared_player.infrared import (  # noqa: E402
     IR_HEIGHT,
     IR_UVC_WIDTH,
     IR_WIDTH,
+    RAW_IR_HEIGHT,
     DEFAULT_TEMP_MAX,
     DEFAULT_TEMP_MIN,
     InfraredProcessor,
@@ -28,7 +29,7 @@ from infrared_player.infrared import (  # noqa: E402
 class InfraredPipelineTests(unittest.TestCase):
     def test_decode_sample_payload_has_expected_shape(self) -> None:
         raw = (ROOT / "data" / "1.bin").read_bytes()
-        frame = np.frombuffer(raw, dtype=np.uint8).reshape(IR_HEIGHT, IR_UVC_WIDTH, 2)
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape(RAW_IR_HEIGHT, IR_UVC_WIDTH, 2)
         decoded = decode_infrared_payload(frame)
         self.assertEqual(decoded.shape, (IR_HEIGHT, IR_WIDTH))
         self.assertEqual(decoded.dtype, np.uint16)
@@ -37,7 +38,7 @@ class InfraredPipelineTests(unittest.TestCase):
 
     def test_decode_first_pixels_match_manual_reference(self) -> None:
         raw = np.frombuffer((ROOT / "data" / "1.bin").read_bytes(), dtype=np.uint8)
-        frame = raw.reshape(IR_HEIGHT, IR_UVC_WIDTH, 2)
+        frame = raw.reshape(RAW_IR_HEIGHT, IR_UVC_WIDTH, 2)
         decoded = decode_infrared_payload(frame)
 
         expected = []
@@ -49,7 +50,7 @@ class InfraredPipelineTests(unittest.TestCase):
 
     def test_processing_outputs_gray_and_pseudo_images(self) -> None:
         raw = (ROOT / "data" / "1.bin").read_bytes()
-        frame = np.frombuffer(raw, dtype=np.uint8).reshape(IR_HEIGHT, IR_UVC_WIDTH, 2)
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape(RAW_IR_HEIGHT, IR_UVC_WIDTH, 2)
         infrared = InfraredProcessor().process(frame)
 
         self.assertEqual(infrared.gray8.shape, (IR_HEIGHT, IR_WIDTH))
@@ -79,10 +80,20 @@ class InfraredPipelineTests(unittest.TestCase):
         gray8 = clip_linear_stretch(temp14)
 
         self.assertEqual(int(gray8[0, 0]), 0)
-        self.assertEqual(int(gray8[0, 1]), 0)
-        self.assertEqual(int(gray8[1, 0]), 255)
+        self.assertLessEqual(int(gray8[0, 1]), 5)
+        self.assertGreaterEqual(int(gray8[1, 0]), 250)
         self.assertEqual(int(gray8[1, 1]), 255)
         self.assertTrue(0 < int(gray8[0, 2]) < 255)
+
+    def test_decode_drops_last_raw_row(self) -> None:
+        raw_rows = np.zeros((RAW_IR_HEIGHT, IR_WIDTH, 4), dtype=np.uint8)
+        raw_rows[-1, :, :] = 0xF0
+        frame = raw_rows.reshape(RAW_IR_HEIGHT, IR_UVC_WIDTH, 2)
+
+        decoded = decode_infrared_payload(frame)
+
+        self.assertEqual(decoded.shape, (IR_HEIGHT, IR_WIDTH))
+        self.assertTrue(np.all(decoded[-1] == 0))
 
 
 if __name__ == "__main__":

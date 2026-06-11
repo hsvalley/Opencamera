@@ -12,12 +12,13 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 from .models import InfraredFrame
 
 IR_WIDTH = 260
-IR_HEIGHT = 202
+IR_HEIGHT = 201
+RAW_IR_HEIGHT = 202
 IR_UVC_WIDTH = IR_WIDTH * 2
 IR_UVC_BYTES_PER_PIXEL = 2
 IR_BYTES_PER_LOGICAL_PIXEL = 4
-DEFAULT_TEMP_MIN = 6616
-DEFAULT_TEMP_MAX = 10502
+DEFAULT_TEMP_MIN = 7616
+DEFAULT_TEMP_MAX = 9502
 DEFAULT_MEDIAN_KERNEL = 3
 
 
@@ -37,13 +38,13 @@ class InfraredProcessor:
 
 def decode_infrared_payload(frame: np.ndarray) -> np.ndarray:
     payload = np.ascontiguousarray(frame).view(np.uint8).reshape(-1)
-    expected_size = IR_WIDTH * IR_HEIGHT * IR_BYTES_PER_LOGICAL_PIXEL
+    expected_size = IR_WIDTH * RAW_IR_HEIGHT * IR_BYTES_PER_LOGICAL_PIXEL
     if payload.size != expected_size:
         raise ValueError(
             f"Unexpected infrared payload size: {payload.size}, expected {expected_size}"
         )
 
-    pixels = payload.reshape(IR_HEIGHT, IR_WIDTH, IR_BYTES_PER_LOGICAL_PIXEL)
+    pixels = payload.reshape(RAW_IR_HEIGHT, IR_WIDTH, IR_BYTES_PER_LOGICAL_PIXEL)
     nibbles = pixels >> 4
     value16 = (
         (nibbles[:, :, 0].astype(np.uint16) << 12)
@@ -51,7 +52,7 @@ def decode_infrared_payload(frame: np.ndarray) -> np.ndarray:
         | (nibbles[:, :, 2].astype(np.uint16) << 4)
         | nibbles[:, :, 3].astype(np.uint16)
     )
-    return value16 & 0x3FFF
+    return (value16 & 0x3FFF)[:IR_HEIGHT, :]
 
 
 def clip_linear_stretch(
@@ -66,8 +67,32 @@ def clip_linear_stretch(
         return np.zeros(temp14.shape, dtype=np.uint8)
 
     clipped = np.clip(temp14.astype(np.float32, copy=False), float(min_val), float(max_val))
-    normalized = ((clipped - float(min_val)) * 255.0 / float(max_val - min_val)).astype(np.uint8)
-    return normalized
+    scaled = ((clipped - float(min_val)) * 255.0 / float(max_val - min_val)).astype(np.uint8)
+    return histogram_equalize(scaled)
+
+
+def histogram_equalize(gray8: np.ndarray) -> np.ndarray:
+    if gray8.size == 0:
+        return gray8.copy()
+    if cv2 is not None:
+        return cv2.equalizeHist(gray8)
+    return _histogram_equalize_fallback(gray8)
+
+
+def _histogram_equalize_fallback(gray8: np.ndarray) -> np.ndarray:
+    hist = np.bincount(gray8.reshape(-1), minlength=256)
+    cdf = hist.cumsum()
+    nonzero = cdf[cdf > 0]
+    if nonzero.size == 0:
+        return gray8.copy()
+
+    cdf_min = int(nonzero[0])
+    total = int(gray8.size)
+    if total == cdf_min:
+        return np.zeros_like(gray8)
+
+    lut = np.round((cdf - cdf_min) * 255.0 / (total - cdf_min)).clip(0, 255).astype(np.uint8)
+    return lut[gray8]
 
 
 def median_filter(gray8: np.ndarray, kernel_size: int = DEFAULT_MEDIAN_KERNEL) -> np.ndarray:
