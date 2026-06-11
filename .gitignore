@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Packaging
+build/
+dist/
+*.spec.bak
+
+# Visual Studio
+.vs/
+*.VC.db
+*.VC.opendb
+*.suo
+*.user
+*.ipch
+*.pdb
+*.ilk
+*.obj
+*.iobj
+*.ipdb
+*.tlog
+*.lastbuildstate
+*.recipe
+*.log
+
+# Visual Studio build outputs
+[Dd]ebug/
+[Rr]elease/
+x64/
+[Bb]in/
+[Oo]bj/
+
+# OS
+Thumbs.db
+Desktop.ini
