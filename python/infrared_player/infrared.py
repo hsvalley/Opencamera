@@ -16,18 +16,20 @@ IR_HEIGHT = 202
 IR_UVC_WIDTH = IR_WIDTH * 2
 IR_UVC_BYTES_PER_PIXEL = 2
 IR_BYTES_PER_LOGICAL_PIXEL = 4
-DEFAULT_CLIP_RATIO = 0.005
+DEFAULT_TEMP_MIN = 6616
+DEFAULT_TEMP_MAX = 10502
 DEFAULT_MEDIAN_KERNEL = 3
 
 
 @dataclass(slots=True)
 class InfraredProcessor:
-    clip_ratio: float = DEFAULT_CLIP_RATIO
+    temp_min: int = DEFAULT_TEMP_MIN
+    temp_max: int = DEFAULT_TEMP_MAX
     median_kernel: int = DEFAULT_MEDIAN_KERNEL
 
     def process(self, frame: np.ndarray) -> InfraredFrame:
         temp14 = decode_infrared_payload(frame)
-        gray8 = clip_linear_stretch(temp14, clip_ratio=self.clip_ratio)
+        gray8 = clip_linear_stretch(temp14, min_val=self.temp_min, max_val=self.temp_max)
         filtered = median_filter(gray8, kernel_size=self.median_kernel)
         pseudo_rgb = gray_to_pseudo(filtered)
         return InfraredFrame(temp14=temp14, gray8=filtered, pseudo_rgb=pseudo_rgb)
@@ -52,21 +54,19 @@ def decode_infrared_payload(frame: np.ndarray) -> np.ndarray:
     return value16 & 0x3FFF
 
 
-def clip_linear_stretch(temp14: np.ndarray, clip_ratio: float = DEFAULT_CLIP_RATIO) -> np.ndarray:
+def clip_linear_stretch(
+    temp14: np.ndarray,
+    min_val: int = DEFAULT_TEMP_MIN,
+    max_val: int = DEFAULT_TEMP_MAX,
+) -> np.ndarray:
     if temp14.size == 0:
         return np.zeros((IR_HEIGHT, IR_WIDTH), dtype=np.uint8)
 
-    flat = temp14.astype(np.float32, copy=False)
-    lo = float(np.quantile(flat, clip_ratio))
-    hi = float(np.quantile(flat, 1.0 - clip_ratio))
-    if hi <= lo:
-        lo = float(np.min(flat))
-        hi = float(np.max(flat))
-    if hi <= lo:
+    if max_val <= min_val:
         return np.zeros(temp14.shape, dtype=np.uint8)
 
-    clipped = np.clip(flat, lo, hi)
-    normalized = ((clipped - lo) * 255.0 / (hi - lo)).astype(np.uint8)
+    clipped = np.clip(temp14.astype(np.float32, copy=False), float(min_val), float(max_val))
+    normalized = ((clipped - float(min_val)) * 255.0 / float(max_val - min_val)).astype(np.uint8)
     return normalized
 
 

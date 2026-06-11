@@ -15,6 +15,8 @@ from infrared_player.infrared import (  # noqa: E402
     IR_HEIGHT,
     IR_UVC_WIDTH,
     IR_WIDTH,
+    DEFAULT_TEMP_MAX,
+    DEFAULT_TEMP_MIN,
     InfraredProcessor,
     clip_linear_stretch,
     decode_infrared_payload,
@@ -64,6 +66,23 @@ class InfraredPipelineTests(unittest.TestCase):
         self.assertEqual(gray8.shape, temp14.shape)
         self.assertEqual(filtered.shape, temp14.shape)
         self.assertEqual(pseudo.shape, (*temp14.shape, 3))
+
+    def test_clip_stretch_uses_fixed_temperature_range(self) -> None:
+        temp14 = np.array(
+            [
+                [DEFAULT_TEMP_MIN - 10, DEFAULT_TEMP_MIN, (DEFAULT_TEMP_MIN + DEFAULT_TEMP_MAX) // 2],
+                [DEFAULT_TEMP_MAX, DEFAULT_TEMP_MAX + 10, DEFAULT_TEMP_MIN + 1],
+            ],
+            dtype=np.uint16,
+        )
+
+        gray8 = clip_linear_stretch(temp14)
+
+        self.assertEqual(int(gray8[0, 0]), 0)
+        self.assertEqual(int(gray8[0, 1]), 0)
+        self.assertEqual(int(gray8[1, 0]), 255)
+        self.assertEqual(int(gray8[1, 1]), 255)
+        self.assertTrue(0 < int(gray8[0, 2]) < 255)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $specPath = Join-Path $PSScriptRoot "infrared_camera_player.spec"
 
-Write-Host "Building InfraredCameraPlayer from $repoRoot"
+Write-Host "Building onefile InfraredCameraPlayer from $repoRoot"
 
 Push-Location $repoRoot
 try {
