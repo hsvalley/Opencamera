@@ -17,20 +17,16 @@ RAW_IR_HEIGHT = 202
 IR_UVC_WIDTH = IR_WIDTH * 2
 IR_UVC_BYTES_PER_PIXEL = 2
 IR_BYTES_PER_LOGICAL_PIXEL = 4
-DEFAULT_TEMP_MIN = 7616
-DEFAULT_TEMP_MAX = 9502
 DEFAULT_MEDIAN_KERNEL = 3
 
 
 @dataclass(slots=True)
 class InfraredProcessor:
-    temp_min: int = DEFAULT_TEMP_MIN
-    temp_max: int = DEFAULT_TEMP_MAX
     median_kernel: int = DEFAULT_MEDIAN_KERNEL
 
     def process(self, frame: np.ndarray) -> InfraredFrame:
         temp14 = decode_infrared_payload(frame)
-        gray8 = clip_linear_stretch(temp14, min_val=self.temp_min, max_val=self.temp_max)
+        gray8 = clip_linear_stretch(temp14)
         filtered = median_filter(gray8, kernel_size=self.median_kernel)
         pseudo_rgb = gray_to_pseudo(filtered)
         return InfraredFrame(temp14=temp14, gray8=filtered, pseudo_rgb=pseudo_rgb)
@@ -55,44 +51,45 @@ def decode_infrared_payload(frame: np.ndarray) -> np.ndarray:
     return (value16 & 0x3FFF)[:IR_HEIGHT, :]
 
 
-def clip_linear_stretch(
-    temp14: np.ndarray,
-    min_val: int = DEFAULT_TEMP_MIN,
-    max_val: int = DEFAULT_TEMP_MAX,
-) -> np.ndarray:
+def clip_linear_stretch(temp14: np.ndarray) -> np.ndarray:
     if temp14.size == 0:
         return np.zeros((IR_HEIGHT, IR_WIDTH), dtype=np.uint8)
 
-    if max_val <= min_val:
+    return histogram_equalize_temperature(temp14)
+
+
+def histogram_equalize_temperature(temp14: np.ndarray) -> np.ndarray:
+    """直接对原始温度值做直方图均衡，输出 0-255 灰度图。"""
+    if temp14.size == 0:
+        return np.zeros((IR_HEIGHT, IR_WIDTH), dtype=np.uint8)
+
+    return _histogram_equalize_raw(temp14)
+
+
+def _histogram_equalize_raw(temp14: np.ndarray) -> np.ndarray:
+    """直接在原始温度值上做直方图均衡，输出 0-255 灰度图。"""
+    data_min = int(temp14.min())
+    data_max = int(temp14.max())
+    if data_min == data_max:
         return np.zeros(temp14.shape, dtype=np.uint8)
 
-    clipped = np.clip(temp14.astype(np.float32, copy=False), float(min_val), float(max_val))
-    scaled = ((clipped - float(min_val)) * 255.0 / float(max_val - min_val)).astype(np.uint8)
-    return histogram_equalize(scaled)
-
-
-def histogram_equalize(gray8: np.ndarray) -> np.ndarray:
-    if gray8.size == 0:
-        return gray8.copy()
-    if cv2 is not None:
-        return cv2.equalizeHist(gray8)
-    return _histogram_equalize_fallback(gray8)
-
-
-def _histogram_equalize_fallback(gray8: np.ndarray) -> np.ndarray:
-    hist = np.bincount(gray8.reshape(-1), minlength=256)
+    temp_range = data_max - data_min + 1
+    indices = (temp14.astype(np.int32) - data_min).reshape(-1)
+    hist = np.bincount(indices, minlength=temp_range)
     cdf = hist.cumsum()
     nonzero = cdf[cdf > 0]
     if nonzero.size == 0:
-        return gray8.copy()
+        return np.zeros(temp14.shape, dtype=np.uint8)
 
     cdf_min = int(nonzero[0])
-    total = int(gray8.size)
+    total = int(temp14.size)
     if total == cdf_min:
-        return np.zeros_like(gray8)
+        return np.zeros(temp14.shape, dtype=np.uint8)
 
-    lut = np.round((cdf - cdf_min) * 255.0 / (total - cdf_min)).clip(0, 255).astype(np.uint8)
-    return lut[gray8]
+    lut = np.round(
+        (cdf - cdf_min) * 255.0 / (total - cdf_min)
+    ).clip(0, 255).astype(np.uint8)
+    return lut[indices].reshape(temp14.shape)
 
 
 def median_filter(gray8: np.ndarray, kernel_size: int = DEFAULT_MEDIAN_KERNEL) -> np.ndarray:

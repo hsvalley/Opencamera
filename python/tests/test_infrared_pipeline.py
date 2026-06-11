@@ -16,8 +16,6 @@ from infrared_player.infrared import (  # noqa: E402
     IR_UVC_WIDTH,
     IR_WIDTH,
     RAW_IR_HEIGHT,
-    DEFAULT_TEMP_MAX,
-    DEFAULT_TEMP_MIN,
     InfraredProcessor,
     clip_linear_stretch,
     decode_infrared_payload,
@@ -68,22 +66,23 @@ class InfraredPipelineTests(unittest.TestCase):
         self.assertEqual(filtered.shape, temp14.shape)
         self.assertEqual(pseudo.shape, (*temp14.shape, 3))
 
-    def test_clip_stretch_uses_fixed_temperature_range(self) -> None:
+    def test_clip_stretch_uses_full_data_range(self) -> None:
+        """直方图均衡基于数据自身的 min/max，不做外部截断。"""
         temp14 = np.array(
             [
-                [DEFAULT_TEMP_MIN - 10, DEFAULT_TEMP_MIN, (DEFAULT_TEMP_MIN + DEFAULT_TEMP_MAX) // 2],
-                [DEFAULT_TEMP_MAX, DEFAULT_TEMP_MAX + 10, DEFAULT_TEMP_MIN + 1],
+                [7606, 7616, 8559],
+                [9502, 9512, 7617],
             ],
             dtype=np.uint16,
         )
 
         gray8 = clip_linear_stretch(temp14)
 
+        # 数据 min=7606 → 0，max=9512 → 255，中间均匀分布
         self.assertEqual(int(gray8[0, 0]), 0)
-        self.assertLessEqual(int(gray8[0, 1]), 5)
-        self.assertGreaterEqual(int(gray8[1, 0]), 250)
         self.assertEqual(int(gray8[1, 1]), 255)
-        self.assertTrue(0 < int(gray8[0, 2]) < 255)
+        self.assertTrue(0 < int(gray8[0, 1]) < 128)
+        self.assertTrue(128 < int(gray8[1, 0]) < 255)
 
     def test_decode_drops_last_raw_row(self) -> None:
         raw_rows = np.zeros((RAW_IR_HEIGHT, IR_WIDTH, 4), dtype=np.uint8)
