@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -23,9 +23,18 @@ DEFAULT_MEDIAN_KERNEL = 3
 @dataclass(slots=True)
 class InfraredProcessor:
     median_kernel: int = DEFAULT_MEDIAN_KERNEL
+    calibration_map: np.ndarray | None = field(default=None)
+
+    def calibrate(self, frame: np.ndarray) -> None:
+        """从当前原始帧计算校准误差图（各像素与均值的差）。"""
+        temp14 = decode_infrared_payload(frame)
+        mean_val = float(temp14.mean())
+        self.calibration_map = temp14.astype(np.float32) - mean_val
 
     def process(self, frame: np.ndarray) -> InfraredFrame:
         temp14 = decode_infrared_payload(frame)
+        if self.calibration_map is not None:
+            temp14 = _apply_calibration(temp14, self.calibration_map)
         gray8 = clip_linear_stretch(temp14)
         filtered = median_filter(gray8, kernel_size=self.median_kernel)
         pseudo_rgb = gray_to_pseudo(filtered)
@@ -49,6 +58,12 @@ def decode_infrared_payload(frame: np.ndarray) -> np.ndarray:
         | nibbles[:, :, 3].astype(np.uint16)
     )
     return (value16 & 0x3FFF)[:IR_HEIGHT, :]
+
+
+def _apply_calibration(temp14: np.ndarray, calibration_map: np.ndarray) -> np.ndarray:
+    """用校准误差图校正原始温度数据。"""
+    corrected = temp14.astype(np.float32) - calibration_map
+    return np.clip(corrected, 0, 0x3FFF).astype(np.uint16)
 
 
 def clip_linear_stretch(temp14: np.ndarray) -> np.ndarray:

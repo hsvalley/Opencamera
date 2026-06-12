@@ -50,6 +50,9 @@ class MainWindow(QMainWindow):
         self.pseudo_checkbox = QCheckBox("显示伪彩图")
         self.pseudo_checkbox.setChecked(True)
 
+        self.calibrate_button = QPushButton("校准")
+        self._pending_calibration = False
+
         self.status_label = QLabel("准备就绪")
         self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
@@ -86,6 +89,7 @@ class MainWindow(QMainWindow):
         toggles.addWidget(self.normal_checkbox)
         toggles.addWidget(self.gray_checkbox)
         toggles.addWidget(self.pseudo_checkbox)
+        toggles.addWidget(self.calibrate_button)
         toggles.addStretch(1)
 
         views = QHBoxLayout()
@@ -106,6 +110,7 @@ class MainWindow(QMainWindow):
         self.normal_checkbox.toggled.connect(self._on_display_state_changed)
         self.gray_checkbox.toggled.connect(self._on_display_state_changed)
         self.pseudo_checkbox.toggled.connect(self._on_display_state_changed)
+        self.calibrate_button.clicked.connect(self._on_calibrate)
 
     def _create_view(self, title: str) -> QLabel:
         label = QLabel(title)
@@ -156,6 +161,10 @@ class MainWindow(QMainWindow):
         self._update_controls()
         self._clear_views()
 
+    def _on_calibrate(self) -> None:
+        self._pending_calibration = True
+        self.status_label.setText("正在校准，请确保镜头对准均匀温度表面...")
+
     def _update_controls(self) -> None:
         kind = self.current_camera_kind()
         is_normal = kind is CameraKind.NORMAL
@@ -165,6 +174,7 @@ class MainWindow(QMainWindow):
         self.normal_view.setVisible(is_normal and self.normal_checkbox.isChecked())
         self.gray_view.setVisible((not is_normal) and self.gray_checkbox.isChecked())
         self.pseudo_view.setVisible((not is_normal) and self.pseudo_checkbox.isChecked())
+        self.calibrate_button.setVisible(not is_normal)
 
     def _reopen_camera(self) -> None:
         device = self.current_device()
@@ -180,6 +190,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"打开摄像头失败: {exc}")
             return
 
+        self.router.infrared_processor.calibration_map = None
         self.status_label.setText(f"已打开: {device.display_name}")
 
     def _on_timer(self) -> None:
@@ -191,6 +202,15 @@ class MainWindow(QMainWindow):
             return
 
         kind = self.current_camera_kind()
+
+        if self._pending_calibration and kind is CameraKind.INFRARED:
+            try:
+                self.router.infrared_processor.calibrate(frame)
+                self.status_label.setText("校准完成")
+            except Exception as exc:
+                self.status_label.setText(f"校准失败: {exc}")
+            self._pending_calibration = False
+
         try:
             routed = self.router.route(kind, frame)
         except Exception as exc:
