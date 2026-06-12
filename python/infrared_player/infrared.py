@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -10,6 +11,10 @@ except ImportError:  # pragma: no cover - optional runtime dependency
     cv2 = None
 
 from .models import InfraredFrame
+
+# LUT cache for gray2rgb.txt
+_lut_cache: np.ndarray | None = None
+_lut_checked: bool = False
 
 IR_WIDTH = 260
 IR_HEIGHT = 201
@@ -37,8 +42,9 @@ class InfraredProcessor:
             temp14 = _apply_calibration(temp14, self.calibration_map)
         gray8 = clip_linear_stretch(temp14)
         filtered = median_filter(gray8, kernel_size=self.median_kernel)
-        pseudo_rgb = gray_to_pseudo(filtered)
-        return InfraredFrame(temp14=temp14, gray8=filtered, pseudo_rgb=pseudo_rgb)
+        inverted = 255 - filtered
+        pseudo_rgb = gray_to_pseudo(inverted)
+        return InfraredFrame(temp14=temp14, gray8=inverted, pseudo_rgb=pseudo_rgb)
 
 
 def decode_infrared_payload(frame: np.ndarray) -> np.ndarray:
@@ -128,7 +134,36 @@ def _median_filter_fallback(gray8: np.ndarray, kernel_size: int) -> np.ndarray:
     return result
 
 
+def _load_gray2rgb_lut() -> np.ndarray | None:
+    """加载当前工作目录下的 gray2rgb.txt 作为伪彩色查找表，仅加载一次。"""
+    global _lut_cache, _lut_checked
+    if _lut_checked:
+        return _lut_cache
+    _lut_checked = True
+
+    lut_path = Path.cwd() / "gray2rgb.txt"
+    if not lut_path.is_file():
+        return None
+
+    try:
+        data = np.loadtxt(lut_path, delimiter=",", skiprows=1, dtype=np.uint8)
+    except Exception:
+        return None
+
+    if data.ndim != 2 or data.shape != (256, 4):
+        return None
+    if not np.array_equal(data[:, 0], np.arange(256, dtype=np.uint8)):
+        return None
+
+    _lut_cache = data[:, 1:4]  # RGB columns
+    return _lut_cache
+
+
 def gray_to_pseudo(gray8: np.ndarray) -> np.ndarray:
+    lut = _load_gray2rgb_lut()
+    if lut is not None:
+        return lut[gray8].copy()
+
     gray = gray8.astype(np.uint8, copy=False)
     rgb = np.zeros((*gray.shape, 3), dtype=np.uint8)
 
