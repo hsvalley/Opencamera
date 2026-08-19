@@ -23,10 +23,16 @@ IR_UVC_WIDTH = IR_WIDTH * 2
 IR_UVC_BYTES_PER_PIXEL = 2
 IR_BYTES_PER_LOGICAL_PIXEL = 4
 DEFAULT_MEDIAN_KERNEL = 3
+DEFAULT_BILATERAL_D = 5
+DEFAULT_BILATERAL_SIGMA_COLOR = 75.0
+DEFAULT_BILATERAL_SIGMA_SPACE = 5.0
 
 
 @dataclass(slots=True)
 class InfraredProcessor:
+    bilateral_d: int = DEFAULT_BILATERAL_D
+    bilateral_sigma_color: float = DEFAULT_BILATERAL_SIGMA_COLOR
+    bilateral_sigma_space: float = DEFAULT_BILATERAL_SIGMA_SPACE
     median_kernel: int = DEFAULT_MEDIAN_KERNEL
     calibration_map: np.ndarray | None = field(default=None)
 
@@ -36,10 +42,23 @@ class InfraredProcessor:
         mean_val = float(temp14.mean())
         self.calibration_map = temp14.astype(np.float32) - mean_val
 
+    def calibrated_temp14(self, frame: np.ndarray) -> np.ndarray:
+        """返回校准后（未滤波）的 14-bit 原始温度数据。"""
+        temp14 = decode_infrared_payload(frame)
+        if self.calibration_map is not None:
+            temp14 = _apply_calibration(temp14, self.calibration_map)
+        return temp14
+
     def process(self, frame: np.ndarray) -> InfraredFrame:
         temp14 = decode_infrared_payload(frame)
         if self.calibration_map is not None:
             temp14 = _apply_calibration(temp14, self.calibration_map)
+        temp14 = bilateral_filter_14bit(
+            temp14,
+            d=self.bilateral_d,
+            sigma_color=self.bilateral_sigma_color,
+            sigma_space=self.bilateral_sigma_space,
+        )
         gray8 = clip_linear_stretch(temp14)
         filtered = median_filter(gray8, kernel_size=self.median_kernel)
         inverted = 255 - filtered
@@ -70,6 +89,13 @@ def _apply_calibration(temp14: np.ndarray, calibration_map: np.ndarray) -> np.nd
     """用校准误差图校正原始温度数据。"""
     corrected = temp14.astype(np.float32) - calibration_map
     return np.clip(corrected, 0, 0x3FFF).astype(np.uint16)
+
+
+def save_temp14_bin(temp14: np.ndarray, path: Path) -> None:
+    """将 14-bit 温度数据导出为大端序 .bin（每像素 2 字节，高位在前）。"""
+    if temp14.dtype != np.uint16:
+        temp14 = temp14.astype(np.uint16)
+    path.write_bytes(temp14.astype(">u2").tobytes())
 
 
 def clip_linear_stretch(temp14: np.ndarray) -> np.ndarray:
@@ -111,6 +137,36 @@ def _histogram_equalize_raw(temp14: np.ndarray) -> np.ndarray:
         (cdf - cdf_min) * 255.0 / (total - cdf_min)
     ).clip(0, 255).astype(np.uint8)
     return lut[indices].reshape(temp14.shape)
+
+
+def bilateral_filter_14bit(
+    temp14: np.ndarray,
+    d: int = DEFAULT_BILATERAL_D,
+    sigma_color: float = DEFAULT_BILATERAL_SIGMA_COLOR,
+    sigma_space: float = DEFAULT_BILATERAL_SIGMA_SPACE,
+) -> np.ndarray:
+    """在 14-bit 温度数据上做双边滤波，保边去噪。
+
+    双边滤波在平滑区域去噪的同时保留温度边缘（物体轮廓），
+    在直方图均衡之前执行，避免 HE 放大传感器噪声。
+    """
+    if d <= 0:
+        return temp14.copy()
+
+    if cv2 is not None:
+        img_f32 = temp14.astype(np.float32)
+        filtered = cv2.bilateralFilter(img_f32, d, sigma_color, sigma_space)
+        return np.clip(np.round(filtered), 0, 0x3FFF).astype(np.uint16)
+
+    # 无 OpenCV 时的 fallback：中值滤波
+    k = d if d % 2 == 1 else d + 1
+    padded = np.pad(temp14, k // 2, mode="edge")
+    result = np.empty_like(temp14)
+    for y in range(temp14.shape[0]):
+        for x in range(temp14.shape[1]):
+            window = padded[y : y + k, x : x + k]
+            result[y, x] = np.median(window)
+    return result
 
 
 def median_filter(gray8: np.ndarray, kernel_size: int = DEFAULT_MEDIAN_KERNEL) -> np.ndarray:

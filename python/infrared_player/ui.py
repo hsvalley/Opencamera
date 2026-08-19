@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
@@ -23,6 +25,7 @@ except ImportError as exc:  # pragma: no cover - optional runtime dependency
 from .camera_enumerator import CameraEnumerator
 from .capture_controller import CaptureController
 from .frame_router import FrameRouter
+from .infrared import save_temp14_bin
 from .models import CameraDevice, CameraKind, DisplayState, InfraredFrame
 
 
@@ -52,6 +55,9 @@ class MainWindow(QMainWindow):
 
         self.calibrate_button = QPushButton("校准")
         self._pending_calibration = False
+
+        self.capture_button = QPushButton("抓图")
+        self._pending_capture = False
 
         self.status_label = QLabel("准备就绪")
         self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -90,6 +96,7 @@ class MainWindow(QMainWindow):
         toggles.addWidget(self.gray_checkbox)
         toggles.addWidget(self.pseudo_checkbox)
         toggles.addWidget(self.calibrate_button)
+        toggles.addWidget(self.capture_button)
         toggles.addStretch(1)
 
         views = QHBoxLayout()
@@ -111,6 +118,7 @@ class MainWindow(QMainWindow):
         self.gray_checkbox.toggled.connect(self._on_display_state_changed)
         self.pseudo_checkbox.toggled.connect(self._on_display_state_changed)
         self.calibrate_button.clicked.connect(self._on_calibrate)
+        self.capture_button.clicked.connect(self._on_capture)
 
     def _create_view(self, title: str) -> QLabel:
         label = QLabel(title)
@@ -165,6 +173,12 @@ class MainWindow(QMainWindow):
         self._pending_calibration = True
         self.status_label.setText("正在校准，请确保镜头对准均匀温度表面...")
 
+    def _on_capture(self) -> None:
+        if self.router.infrared_processor.calibration_map is None:
+            self.status_label.setText("请先校准再抓图")
+            return
+        self._pending_capture = True
+
     def _update_controls(self) -> None:
         kind = self.current_camera_kind()
         is_normal = kind is CameraKind.NORMAL
@@ -175,6 +189,7 @@ class MainWindow(QMainWindow):
         self.gray_view.setVisible((not is_normal) and self.gray_checkbox.isChecked())
         self.pseudo_view.setVisible((not is_normal) and self.pseudo_checkbox.isChecked())
         self.calibrate_button.setVisible(not is_normal)
+        self.capture_button.setVisible(not is_normal)
 
     def _reopen_camera(self) -> None:
         device = self.current_device()
@@ -210,6 +225,18 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self.status_label.setText(f"校准失败: {exc}")
             self._pending_calibration = False
+
+        if self._pending_capture and kind is CameraKind.INFRARED:
+            try:
+                temp14 = self.router.infrared_processor.calibrated_temp14(frame)
+                data_dir = Path("data")
+                data_dir.mkdir(parents=True, exist_ok=True)
+                out_path = data_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.bin"
+                save_temp14_bin(temp14, out_path)
+                self.status_label.setText(f"已保存: {out_path}")
+            except Exception as exc:
+                self.status_label.setText(f"抓图失败: {exc}")
+            self._pending_capture = False
 
         try:
             routed = self.router.route(kind, frame)
