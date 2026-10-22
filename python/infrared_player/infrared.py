@@ -17,7 +17,7 @@ _lut_cache: np.ndarray | None = None
 _lut_checked: bool = False
 
 IR_WIDTH = 260
-IR_HEIGHT = 201
+IR_HEIGHT = 202
 RAW_IR_HEIGHT = 202
 IR_UVC_WIDTH = IR_WIDTH * 2
 IR_UVC_BYTES_PER_PIXEL = 2
@@ -26,6 +26,8 @@ DEFAULT_MEDIAN_KERNEL = 3
 DEFAULT_BILATERAL_D = 5
 DEFAULT_BILATERAL_SIGMA_COLOR = 75.0
 DEFAULT_BILATERAL_SIGMA_SPACE = 5.0
+DEFAULT_CALIBRATION_N = 8
+CALIBRATION_N_CHOICES = (8, 4, 2)
 
 
 @dataclass(slots=True)
@@ -34,25 +36,27 @@ class InfraredProcessor:
     bilateral_sigma_color: float = DEFAULT_BILATERAL_SIGMA_COLOR
     bilateral_sigma_space: float = DEFAULT_BILATERAL_SIGMA_SPACE
     median_kernel: int = DEFAULT_MEDIAN_KERNEL
+    calibration_n: int = DEFAULT_CALIBRATION_N
     calibration_map: np.ndarray | None = field(default=None)
 
     def calibrate(self, frame: np.ndarray) -> None:
-        """从当前原始帧计算校准误差图（各像素与均值的差）。"""
+        """从当前原始帧计算校准误差，并下采样为 n×n 网格（各顶点与均值的差）。"""
         temp14 = decode_infrared_payload(frame)
         mean_val = float(temp14.mean())
-        self.calibration_map = temp14.astype(np.float32) - mean_val
+        error = temp14.astype(np.float32) - mean_val
+        self.calibration_map = _build_calibration_grid(error, self.calibration_n)
 
     def calibrated_temp14(self, frame: np.ndarray) -> np.ndarray:
         """返回校准后（未滤波）的 14-bit 原始温度数据。"""
         temp14 = decode_infrared_payload(frame)
         if self.calibration_map is not None:
-            temp14 = _apply_calibration(temp14, self.calibration_map)
+            temp14 = _apply_calibration(temp14, self.calibration_map, self.calibration_n)
         return temp14
 
     def process(self, frame: np.ndarray) -> InfraredFrame:
         temp14 = decode_infrared_payload(frame)
         if self.calibration_map is not None:
-            temp14 = _apply_calibration(temp14, self.calibration_map)
+            temp14 = _apply_calibration(temp14, self.calibration_map, self.calibration_n)
         temp14 = bilateral_filter_14bit(
             temp14,
             d=self.bilateral_d,
@@ -85,10 +89,50 @@ def decode_infrared_payload(frame: np.ndarray) -> np.ndarray:
     return (value16 & 0x3FFF)[:IR_HEIGHT, :]
 
 
-def _apply_calibration(temp14: np.ndarray, calibration_map: np.ndarray) -> np.ndarray:
-    """用校准误差图校正原始温度数据。"""
-    corrected = temp14.astype(np.float32) - calibration_map
+def _apply_calibration(
+    temp14: np.ndarray, calibration_grid: np.ndarray, n: int
+) -> np.ndarray:
+    """用校准误差网格校正原始温度数据。"""
+    error = _interpolate_calibration_grid(calibration_grid, temp14.shape, n)
+    corrected = temp14.astype(np.float32) - error
     return np.clip(corrected, 0, 0x3FFF).astype(np.uint16)
+
+
+def _build_calibration_grid(error: np.ndarray, n: int) -> np.ndarray:
+    """将逐像素校准误差图下采样为 n×n 网格，仅保存每个正方形的 4 个顶点。
+
+    相邻正方形共享顶点，因此网格尺寸为 (ceil(H/n)+1, ceil(W/n)+1)。
+    超出图像右/下边界的顶点取最右/最下的采样值。
+    """
+    h, w = error.shape
+    cols = (w + n - 1) // n  # ceil(w / n)
+    rows = (h + n - 1) // n  # ceil(h / n)
+    xs = np.clip(np.arange(cols + 1) * n, 0, w - 1)
+    ys = np.clip(np.arange(rows + 1) * n, 0, h - 1)
+    return error[np.ix_(ys, xs)]
+
+
+def _interpolate_calibration_grid(
+    grid: np.ndarray, shape: tuple[int, int], n: int
+) -> np.ndarray:
+    """对每个像素按其所在 n×n 正方形做双线性插值，重建逐像素误差图。"""
+    h, w = shape
+    rows, cols = grid.shape
+    xx = np.arange(w)
+    yy = np.arange(h)
+    ci = xx // n
+    cj = yy // n
+    u = (xx - ci * n).astype(np.float32) / n
+    v = (yy - cj * n).astype(np.float32) / n
+
+    top_left = grid[cj[:, None], ci[None, :]]
+    top_right = grid[cj[:, None], ci[None, :] + 1]
+    bottom_left = grid[cj[:, None] + 1, ci[None, :]]
+    bottom_right = grid[cj[:, None] + 1, ci[None, :] + 1]
+
+    top = top_left * (1.0 - u[None, :]) + top_right * u[None, :]
+    bottom = bottom_left * (1.0 - u[None, :]) + bottom_right * u[None, :]
+    return top * (1.0 - v[:, None]) + bottom * v[:, None]
 
 
 def save_temp14_bin(temp14: np.ndarray, path: Path) -> None:
@@ -96,6 +140,49 @@ def save_temp14_bin(temp14: np.ndarray, path: Path) -> None:
     if temp14.dtype != np.uint16:
         temp14 = temp14.astype(np.uint16)
     path.write_bytes(temp14.astype(">u2").tobytes())
+
+
+def save_calibration_grid_bin(grid: np.ndarray, n: int, path: Path) -> None:
+    """将校准误差网格保存为 .bin：头部为 [n, rows, cols] 三个 int32，后跟 float32 数据。"""
+    if grid.dtype != np.float32:
+        grid = grid.astype(np.float32)
+    header = np.array([n, grid.shape[0], grid.shape[1]], dtype=np.int32)
+    path.write_bytes(header.tobytes() + grid.tobytes())
+
+
+def load_calibration_grid_bin(path: Path) -> tuple[np.ndarray, int]:
+    """从 .bin 加载校准误差网格，返回 (grid, n)。"""
+    raw = path.read_bytes()
+    if len(raw) < 12:
+        raise ValueError(f"校准网格文件过短: {path}")
+    header = np.frombuffer(raw[:12], dtype=np.int32)
+    n, rows, cols = int(header[0]), int(header[1]), int(header[2])
+    grid = np.frombuffer(raw[12:], dtype=np.float32).reshape(rows, cols)
+    return grid, n
+
+
+def compute_ooc(temp14: np.ndarray) -> np.ndarray:
+    """为每个像素计算 4-bit ooc 值（0-15）。
+
+    ooc = 7 + (12000 - 原始像素值) / 700，四舍五入后裁剪到 [0, 15]。
+    """
+    ooc = 7.0 + (12000.0 - temp14.astype(np.float32)) / 700.0
+    return np.rint(ooc).clip(0, 15).astype(np.uint8)
+
+
+def pack_ooc_bytes(ooc: np.ndarray) -> np.ndarray:
+    """每 2 个像素组成一个字节：偶数像素高 4 位，奇数像素低 4 位。"""
+    flat = ooc.astype(np.uint8).reshape(-1)
+    even = flat[0::2]  # 索引 0, 2, 4, ...
+    odd = flat[1::2]  # 索引 1, 3, 5, ...
+    return (even << 4) | odd
+
+
+def save_ooc_txt(temp14: np.ndarray, path: Path) -> None:
+    """按 ooc 规则将 14-bit 温度数据打包为字节，以 "0xDD, " 格式写入文本文件。"""
+    packed = pack_ooc_bytes(compute_ooc(temp14))
+    text = ", ".join(f"0x{b:02X}" for b in packed)
+    path.write_text(text, encoding="ascii")
 
 
 def clip_linear_stretch(temp14: np.ndarray) -> np.ndarray:

@@ -57,20 +57,27 @@ typedef struct {
 } sampling_config_t;
 
 /* ======================================================================
- * 模块 2：3x3 高斯滤波，滤波核可配置
+ * 模块 2：3x3 滤波（高斯 / 中值），滤波方式可配置
  * 输入为采样缓存（stride = width + 2），已预留上下各 1 行、左右各 1 列
  * pad 空间，滤波前填充 pad，不另开辟缓存。
  * ====================================================================== */
+typedef enum {
+    FILTER_GAUSSIAN = 0,   /* 3x3 高斯滤波 */
+    FILTER_MEDIAN   = 1    /* 3x3 中值滤波 */
+} filter_mode_t;
+
 typedef struct {
-    int16_t  kernel[9];   /* 3x3 权重，行优先 */
-    uint16_t norm;        /* 归一化因子（权重之和） */
+    filter_mode_t filter_mode; /* 滤波方式，默认 FILTER_GAUSSIAN */
+    int16_t  kernel[9];        /* 3x3 权重，行优先（仅高斯用） */
+    uint16_t norm;             /* 归一化因子（权重之和，仅高斯用） */
 } gaussian_config_t;
 
 /* ======================================================================
- * 模块 3：极值截取（多帧平均平滑）
- * 两种方式：用户配置 min/max，或动态统计。动态统计时每帧取简单
- * min/max，维护 N 帧滑动窗口，用窗口内极值的平均值更新当前极值；
- * 更新条件为变化量 >= step（滞回），满足则直接设为平均值。
+ * 模块 3：极值截取（多帧平滑）
+ * 两种模式：用户配置 min/max，或动态统计。动态统计时每帧取简单
+ * min/max，再用 calc_mode 选择的算法平滑：
+ *   CLIP_CALC_AVG      —— N 帧滑动窗口平均 + step 滞回（变化量 >= step 才更新）
+ *   CLIP_CALC_LOWPASS  —— 一阶低通：cur = (cur*(N-1) + frame) / N
  * ====================================================================== */
 #define CLIP_MAX_FRAMES  16    /* 平均帧数 N 的上限 */
 
@@ -79,35 +86,31 @@ typedef enum {
     CLIP_MODE_DYNAMIC = 1    /* 动态统计调节 */
 } clip_mode_t;
 
+typedef enum {
+    CLIP_CALC_AVG = 0,       /* 滑动窗口平均 + step 滞回 */
+    CLIP_CALC_LOWPASS = 1    /* 一阶低通滤波 */
+} clip_calc_mode_t;
+
 typedef struct {
-    clip_mode_t mode;
-    uint16_t    user_min;     /* 用户配置的最小值 */
-    uint16_t    user_max;     /* 用户配置的最大值 */
-    uint8_t     n_frames;     /* 平均帧数 N（1/2/4/8/16） */
-    uint16_t    step;         /* 更新阈值：变化量 >= step 才更新，默认 16 */
+    clip_mode_t      mode;
+    clip_calc_mode_t calc_mode;  /* 动态统计计算方式，默认 CLIP_CALC_LOWPASS */
+    uint16_t         user_min;   /* 用户配置的最小值 */
+    uint16_t         user_max;   /* 用户配置的最大值 */
+    uint8_t          n_frames;   /* 平滑帧数 N（1/2/4/8/16） */
+    uint16_t         step;       /* 更新阈值（仅平均方式）：变化量 >= step 才更新 */
 } clip_config_t;
 
-/* 模块 3 运行时状态（跨帧保持） */
-#define CLIP_USE_LOWPASS 0  /* 0:滑动窗口平均, 1:低通滤波 */
-#if CLIP_USE_LOWPASS == 0
+/* 模块 3 运行时状态（跨帧保持，同时容纳平均与低通两种算法所需字段） */
 typedef struct {
-    uint16_t min_buf[CLIP_MAX_FRAMES];  /* 滑动窗口内各帧 min */
-    uint16_t max_buf[CLIP_MAX_FRAMES];  /* 滑动窗口内各帧 max */
-    uint32_t sum_min;                   /* 窗口 min 之和 */
-    uint32_t sum_max;                   /* 窗口 max 之和 */
-    uint8_t  cnt;                       /* 已累积帧数 0..N */
-    uint8_t  write_idx;                 /* 环形写位置 */
+    uint16_t min_buf[CLIP_MAX_FRAMES];  /* 滑动窗口内各帧 min（平均方式用） */
+    uint16_t max_buf[CLIP_MAX_FRAMES];  /* 滑动窗口内各帧 max（平均方式用） */
+    uint32_t sum_min;                   /* 窗口 min 之和（平均方式用） */
+    uint32_t sum_max;                   /* 窗口 max 之和（平均方式用） */
+    uint8_t  cnt;                       /* 已累积帧数（平均 0..N，低通作首帧标志） */
+    uint8_t  write_idx;                 /* 环形写位置（平均方式用） */
     uint16_t cur_min;                   /* 当前输出 min */
     uint16_t cur_max;                   /* 当前输出 max */
 } clip_state_t;
-#else
-//采用低通滤波方式
-typedef struct {
-    uint8_t  cnt;                       /* 已累积帧数 0..N */
-    uint16_t cur_min;                   /* 当前输出 min */
-    uint16_t cur_max;                   /* 当前输出 max */
-} clip_state_t;
- #endif
 /* ======================================================================
  * 模块 4：线性压缩，根据极值把温度值缩到 10-bit
  * ====================================================================== */
@@ -121,6 +124,7 @@ typedef struct {
  * ====================================================================== */
 typedef struct {
     uint8_t out_bits;    /* 输出位宽 = 8 */
+    uint8_t reverse;     /* 0:灰度升序, 1:灰度降序 */
 } hist_eq_config_t;
 
 /* ======================================================================
@@ -202,10 +206,17 @@ void color_config_init(color_config_t *cfg, color_format_t format);
 uint32_t sampling_run(const uint8_t *stream, uint32_t stream_bytes,
                       const sampling_config_t *cfg, uint16_t *temp14_out);
 
-/* 模块 2：3x3 高斯滤波，输入含 pad 的采样缓存（stride = width + 2），
- * 结果紧凑写回同一缓存前部（原地） */
+/* 模块 2：3x3 滤波（按 cfg->filter_mode 分发到高斯或中值），输入含 pad 的
+ * 采样缓存（stride = width + 2），结果紧凑写回同一缓存前部（原地） */
+void filter_run(uint16_t *img, uint16_t width, uint16_t height, uint16_t bits,
+                uint16_t stride, const gaussian_config_t *cfg);
+
+/* 3x3 高斯滤波（具体实现） */
 void gaussian_run(uint16_t *img, uint16_t width, uint16_t height, uint16_t bits,
                   uint16_t stride, const gaussian_config_t *cfg);
+
+/* 3x3 中值滤波（具体实现，取窗口内 9 值中位数） */
+void median_run(uint16_t *img, uint16_t width, uint16_t height, uint16_t stride);
 
 /* 模块 3 状态初始化（cur_min=0, cur_max=TEMP14_MAX） */
 void clip_state_init(clip_state_t *st);
@@ -221,7 +232,8 @@ void compress_run(uint16_t *img, uint32_t count,
                   const compress_config_t *cfg);
 
 /* 模块 5：直方图均衡 10-bit -> 8-bit */
-void hist_eq_run(const uint16_t *img, uint32_t count, uint32_t *hist, uint8_t *gray8_out);
+void hist_eq_run(const uint16_t *img, uint32_t count, const hist_eq_config_t *cfg,
+                 uint32_t *hist, uint8_t *gray8_out);
 
 /* 模块 6：查表映射，输出交错 3 通道（RGB 或 YUV） */
 void color_run(const uint8_t *gray8, uint32_t count,

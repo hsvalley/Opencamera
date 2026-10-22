@@ -112,13 +112,13 @@ int main(int argc, char *argv[]) {
     /* 每处理一帧原始数据，计数 +1 */
     g_regs.raw_frame_cnt++;
 
-    /* 模块 2：3x3 高斯滤波（原地，结果紧凑写回采样缓存前部） */
+    /* 模块 2：3x3 滤波（高斯/中值，原地，结果紧凑写回采样缓存前部） */
     uint16_t stride = cfg.sampling.src_width + 2;
 
-    gaussian_run(g_data, cfg.sampling.src_width, cfg.sampling.src_height, cfg.sampling.value_bits, stride,
-                 &cfg.gaussian);
+    filter_run(g_data, cfg.sampling.src_width, cfg.sampling.src_height, cfg.sampling.value_bits, stride,
+               &cfg.gaussian);
 
-    /* 模块 3：极值截取（多帧平均平滑，state 跨帧保持） */
+    /* 模块 3：极值截取（多帧平滑，state 跨帧保持） */
     clip_state_init(&clip_st);
     clip_extremes(g_data, pixel_count, &cfg.clip, &clip_st,
                   &min_val, &max_val);
@@ -127,7 +127,7 @@ int main(int argc, char *argv[]) {
     compress_run(g_data, pixel_count, min_val, max_val, &cfg.compress);
 
     /* 模块 5：直方图均衡 10-bit -> 8-bit */
-    hist_eq_run(g_data, pixel_count, g_hist, g_gray8);
+    hist_eq_run(g_data, pixel_count, &cfg.hist_eq, g_hist, g_gray8);
 
     /* 模块 6：查表 RGB/YUV */
     color_run(g_gray8, pixel_count, &cfg.color, g_color);

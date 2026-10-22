@@ -45,7 +45,7 @@ PyInstaller 打包使用 `python/infrared_camera_player.spec`，onefile 模式�
 
 ## 红外处理流水线
 
-红外帧尺寸：UVC 逻辑宽度 520×202，重建后有效像素 260×201（最后一行丢弃）。
+红外帧尺寸：UVC 逻辑宽度 520×202，重建后有效像素 260×202（不丢弃最后一行）。
 
 处理步骤（`infrared.py`）：
 1. **`decode_infrared_payload()`**：每像素 4 字节，取每个字节高 4 位拼成 16-bit 值（`(b0_hi<<12)|(b1_hi<<8)|(b2_hi<<4)|b3_hi`），取低 14 位 → `temp14`
@@ -54,7 +54,7 @@ PyInstaller 打包使用 `python/infrared_camera_player.spec`，onefile 模式�
 4. **`gray_to_pseudo()`**：四段分段线性伪彩映射（蓝→青→绿→红→白）
 
 **重要常量和参数：**
-- `IR_WIDTH = 260`, `IR_HEIGHT = 201`, `RAW_IR_HEIGHT = 202`
+- `IR_WIDTH = 260`, `IR_HEIGHT = 202`, `RAW_IR_HEIGHT = 202`
 - `IR_UVC_WIDTH = 520`（260×2 字节）
 - `DEFAULT_MEDIAN_KERNEL = 3`
 - 裁剪比例和温度上下限已被直方图均衡替代（见 git log）

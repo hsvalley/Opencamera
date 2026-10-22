@@ -21,14 +21,16 @@ void pipeline_config_default(pipeline_config_t *cfg, color_format_t format) {
     s->skip_left = 0;
     s->skip_right = 0;
 
-    /* 模块 2：3x3 高斯核，权重 [1 2 1; 2 4 2; 1 2 1]，归一化 16 */
+    /* 模块 2：滤波默认高斯，权重 [1 2 1; 2 4 2; 1 2 1]，归一化 16 */
+    g->filter_mode = FILTER_GAUSSIAN;
     for (i = 0; i < 9; i++) {
         g->kernel[i] = gauss_kernel[i];
     }
     g->norm = 16;
 
-    /* 模块 3：极值截取默认动态统计（多帧平均平滑），N=4，step=16 */
+    /* 模块 3：极值截取默认动态统计，低通方式，N=4，step=16 */
     cfg->clip.mode = CLIP_MODE_DYNAMIC;
+    cfg->clip.calc_mode = CLIP_CALC_LOWPASS;
     cfg->clip.user_min = 0;
     cfg->clip.user_max = TEMP14_MAX;
     cfg->clip.n_frames = 4;
@@ -40,6 +42,7 @@ void pipeline_config_default(pipeline_config_t *cfg, color_format_t format) {
 
     /* 模块 5：直方图均衡到 8-bit */
     cfg->hist_eq.out_bits = 8;
+    cfg->hist_eq.reverse = 1;   /* 默认反相：灰度降序（高温=暗） */
 
     /* 模块 6：查表（含 LUT 生成） */
     color_config_init(&cfg->color, format);

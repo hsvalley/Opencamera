@@ -25,7 +25,12 @@ except ImportError as exc:  # pragma: no cover - optional runtime dependency
 from .camera_enumerator import CameraEnumerator
 from .capture_controller import CaptureController
 from .frame_router import FrameRouter
-from .infrared import save_temp14_bin
+from .infrared import (
+    decode_infrared_payload,
+    save_calibration_grid_bin,
+    save_ooc_txt,
+    save_temp14_bin,
+)
 from .models import CameraDevice, CameraKind, DisplayState, InfraredFrame
 
 
@@ -53,11 +58,19 @@ class MainWindow(QMainWindow):
         self.pseudo_checkbox = QCheckBox("显示伪彩图")
         self.pseudo_checkbox.setChecked(True)
 
+        self.calibration_n_label = QLabel("校准采样 N")
+        self.calibration_n_combo = QComboBox()
+        self.calibration_n_combo.addItems([str(n) for n in (8, 4, 2)])
+        self.calibration_n_combo.setCurrentText("8")
+
         self.calibrate_button = QPushButton("校准")
         self._pending_calibration = False
 
         self.capture_button = QPushButton("抓图")
         self._pending_capture = False
+
+        self.grab_button = QPushButton("抓ooc")
+        self._pending_grab = False
 
         self.status_label = QLabel("准备就绪")
         self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -95,8 +108,11 @@ class MainWindow(QMainWindow):
         toggles.addWidget(self.normal_checkbox)
         toggles.addWidget(self.gray_checkbox)
         toggles.addWidget(self.pseudo_checkbox)
+        toggles.addWidget(self.calibration_n_label)
+        toggles.addWidget(self.calibration_n_combo)
         toggles.addWidget(self.calibrate_button)
         toggles.addWidget(self.capture_button)
+        toggles.addWidget(self.grab_button)
         toggles.addStretch(1)
 
         views = QHBoxLayout()
@@ -118,7 +134,9 @@ class MainWindow(QMainWindow):
         self.gray_checkbox.toggled.connect(self._on_display_state_changed)
         self.pseudo_checkbox.toggled.connect(self._on_display_state_changed)
         self.calibrate_button.clicked.connect(self._on_calibrate)
+        self.calibration_n_combo.currentTextChanged.connect(self._on_calibration_n_changed)
         self.capture_button.clicked.connect(self._on_capture)
+        self.grab_button.clicked.connect(self._on_grab)
 
     def _create_view(self, title: str) -> QLabel:
         label = QLabel(title)
@@ -173,11 +191,19 @@ class MainWindow(QMainWindow):
         self._pending_calibration = True
         self.status_label.setText("正在校准，请确保镜头对准均匀温度表面...")
 
+    def _on_calibration_n_changed(self, text: str) -> None:
+        processor = self.router.infrared_processor
+        processor.calibration_n = int(text)
+        processor.calibration_map = None
+        self.status_label.setText("校准采样间隔已更改，请重新校准")
+
     def _on_capture(self) -> None:
-        if self.router.infrared_processor.calibration_map is None:
-            self.status_label.setText("请先校准再抓图")
-            return
         self._pending_capture = True
+        self.status_label.setText("正在抓图...")
+
+    def _on_grab(self) -> None:
+        self._pending_grab = True
+        self.status_label.setText("正在抓取原始数据...")
 
     def _update_controls(self) -> None:
         kind = self.current_camera_kind()
@@ -188,8 +214,11 @@ class MainWindow(QMainWindow):
         self.normal_view.setVisible(is_normal and self.normal_checkbox.isChecked())
         self.gray_view.setVisible((not is_normal) and self.gray_checkbox.isChecked())
         self.pseudo_view.setVisible((not is_normal) and self.pseudo_checkbox.isChecked())
+        self.calibration_n_label.setVisible(not is_normal)
+        self.calibration_n_combo.setVisible(not is_normal)
         self.calibrate_button.setVisible(not is_normal)
         self.capture_button.setVisible(not is_normal)
+        self.grab_button.setVisible(not is_normal)
 
     def _reopen_camera(self) -> None:
         device = self.current_device()
@@ -220,8 +249,13 @@ class MainWindow(QMainWindow):
 
         if self._pending_calibration and kind is CameraKind.INFRARED:
             try:
-                self.router.infrared_processor.calibrate(frame)
-                self.status_label.setText("校准完成")
+                processor = self.router.infrared_processor
+                processor.calibrate(frame)
+                data_dir = Path("data")
+                data_dir.mkdir(parents=True, exist_ok=True)
+                out_path = data_dir / f"grid_error_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bin"
+                save_calibration_grid_bin(processor.calibration_map, processor.calibration_n, out_path)
+                self.status_label.setText(f"校准完成，已保存: {out_path}")
             except Exception as exc:
                 self.status_label.setText(f"校准失败: {exc}")
             self._pending_calibration = False
@@ -237,6 +271,18 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self.status_label.setText(f"抓图失败: {exc}")
             self._pending_capture = False
+
+        if self._pending_grab and kind is CameraKind.INFRARED:
+            try:
+                temp14 = decode_infrared_payload(frame)
+                data_dir = Path("data")
+                data_dir.mkdir(parents=True, exist_ok=True)
+                out_path = data_dir / f"ooc{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                save_ooc_txt(temp14, out_path)
+                self.status_label.setText(f"已保存: {out_path}")
+            except Exception as exc:
+                self.status_label.setText(f"抓取失败: {exc}")
+            self._pending_grab = False
 
         try:
             routed = self.router.route(kind, frame)
