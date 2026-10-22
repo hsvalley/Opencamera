@@ -1,3 +1,5 @@
+#include <stddef.h>   /* NULL（不依赖编译器/CRT 的间接包含） */
+
 #include "config.h"
 
 /* 模块 1：接口温度值采样

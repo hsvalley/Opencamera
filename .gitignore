@@ -39,3 +39,12 @@ x64/
 # OS
 Thumbs.db
 Desktop.ini
+
+# c_model 阶段转储（main.c 每个模块输出自动生成，可与输入不同目录同名）
+*_sampling.bin
+*_gaussian.bin
+*_median.bin
+*_clip.bin
+*_compress.bin
+*_hist_eq.bin
+*_color.bin
